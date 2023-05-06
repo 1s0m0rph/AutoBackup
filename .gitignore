@@ -1,0 +1,5 @@
+api_key*
+test_target_dir*
+test_old_checksum_file
+.idea
+__pycache__
