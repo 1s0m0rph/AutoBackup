@@ -1,6 +1,7 @@
 from unittest import TestCase
-from unittest.mock import patch, call
+from unittest.mock import patch,call
 from bitwarden_manager import *
+
 
 class TestBitwardenCommander(TestCase):
 
@@ -10,7 +11,7 @@ class TestBitwardenCommander(TestCase):
 		self.path_to_bw_executable = Path("example/path/to/executable/bw")
 		self.path_to_pw_file = Path("example/path/to/password/file")
 
-		self.test_obj = BitwardenCommander(self.mock_sbp_cmd, self.path_to_bw_executable, self.path_to_pw_file)
+		self.test_obj = BitwardenCommander(self.mock_sbp_cmd,self.path_to_bw_executable,self.path_to_pw_file)
 
 	@patch("bitwarden_manager.BitwardenObject")
 	@patch("bitwarden_manager.BitwardenObject")
@@ -91,17 +92,20 @@ class TestBitwardenCommander(TestCase):
 		self.mock_sbp_cmd.exe_wait_sbp_command.return_value = ["this_is_a_session_key"]
 		self.test_obj.unlock()
 		# make sure the session key got set correctly
-		self.assertEqual(self.test_obj.session_key, "this_is_a_session_key")
+		self.assertEqual(self.test_obj.session_key,"this_is_a_session_key")
 		# make sure we did the right commands
-		expected_unlock_cmd = call([str(self.path_to_bw_executable),'unlock','--passwordfile',str(self.path_to_pw_file),'--raw'])
+		expected_unlock_cmd = call(
+			[str(self.path_to_bw_executable),'unlock','--passwordfile',str(self.path_to_pw_file),'--raw'])
 		expected_sync_cmd = call([str(self.path_to_bw_executable),'sync','--session','this_is_a_session_key'])
 		self.mock_sbp_cmd.exe_wait_sbp_command.assert_has_calls([expected_unlock_cmd,expected_sync_cmd])
-		# now that we've done the test with the session key not set, it's already set, so make sure nothing really happens when we call again
-		# self.test_obj.unlock()
+
+	# now that we've done the test with the session key not set, it's already set, so make sure nothing really happens when we call again
+	# self.test_obj.unlock()
 
 	def set_session_key_side_effect(self,set_to):
 		def side_effect():
 			self.test_obj.session_key = set_to
+
 		return side_effect
 
 	def test_exe_bw_command_no_key_set_unlocks_first(self):
@@ -157,14 +161,73 @@ class TestBitwardenCommander(TestCase):
 
 	def test_find_object_info_no_exact_match_returns_first(self):
 		with patch.object(self.test_obj,'exe_bw_command') as mock_exe_cmd:
-			mock_exe_cmd.return_value = ["""[{"object":"item","id":"an-id","name":"Test name 2"},{"object":"item","id":"an-id","name":"Test name 1"}]"""]
+			mock_exe_cmd.return_value = [
+				"""[{"object":"item","id":"an-id","name":"Test name 2"},{"object":"item","id":"an-id","name":"Test name 1"}]"""]
 			actual_res = self.test_obj.find_object_info(['list','items'],'Test name')
-			expected_res = {"object":"item","id":"an-id","name":"Test name 2"}
+			expected_res = {"object": "item","id": "an-id","name": "Test name 2"}
 			self.assertDictEqual(actual_res,expected_res)
 
 	def test_find_object_info_exact_match_returns_exact_match(self):
 		with patch.object(self.test_obj,'exe_bw_command') as mock_exe_cmd:
-			mock_exe_cmd.return_value = ["""[{"object":"item","id":"an-id","name":"Test name 2"},{"object":"item","id":"an-id","name":"Test name 1"}]"""]
+			mock_exe_cmd.return_value = [
+				"""[{"object":"item","id":"an-id","name":"Test name 2"},{"object":"item","id":"an-id","name":"Test name 1"}]"""]
 			actual_res = self.test_obj.find_object_info(['list','items'],'Test name 1')
-			expected_res = {"object":"item","id":"an-id","name":"Test name 1"}
+			expected_res = {"object": "item","id": "an-id","name": "Test name 1"}
 			self.assertDictEqual(actual_res,expected_res)
+
+
+class TestCacheableBitwardenObject(TestCase):
+
+	@patch("bitwarden_manager.BitwardenCommander")
+	def test_init(self,mock_commander):
+		# init an object
+		test_obj = CacheableBitwardenObject(mock_commander)
+		# make sure we self-registered
+		mock_commander.register_sync_observer.assert_called_once_with(test_obj)
+
+
+class TestBitwardenObject(TestCase):
+
+	@patch("bitwarden_manager.BitwardenCommander")
+	def setUp(self,mock_commander):
+		self.mock_commander = mock_commander
+		self.obj_id = "test-obj-id"
+
+		self.test_obj = BitwardenObject(self.mock_commander,self.obj_id)
+
+	def test_get_info_no_existing_cache(self):
+		self.assertIsNone(self.test_obj.info_cache)
+		with patch.object(self.test_obj,"get_info_from_bw") as mock_get_info_from_bw:
+			mock_get_info_from_bw.return_value = {'field1': 'value1'}
+			ret_info = self.test_obj.get_info()
+			# make sure we called the fn as expected
+			mock_get_info_from_bw.assert_called_once()
+			# make sure the ret value is what we expected
+			self.assertDictEqual(ret_info,{'field1': 'value1'})
+			# make sure we cached the right thing
+			self.assertDictEqual(self.test_obj.info_cache,{'field1': 'value1'})
+
+	def test_get_info_with_existing_cache(self):
+		self.assertIsNone(self.test_obj.info_cache)
+		self.test_obj.info_cache = {'asdf': 'fdsa'}
+		with patch.object(self.test_obj,"get_info_from_bw") as mock_get_info_from_bw:
+			mock_get_info_from_bw.return_value = {'field1': 'value1'}
+			ret_info = self.test_obj.get_info()
+			# make sure we didn't call the fn
+			mock_get_info_from_bw.assert_not_called()
+			# make sure the ret value is what we expected
+			self.assertDictEqual(ret_info,{'asdf': 'fdsa'})
+
+	def test_sync(self):
+		# super simple test just make sure the cache is cleared
+
+		# once with nothing cached
+		self.assertIsNone(self.test_obj.info_cache)
+		self.test_obj.sync()
+		self.assertIsNone(self.test_obj.info_cache)
+
+		# once with something cached
+		self.test_obj.info_cache = {'asdf','fdsa'}
+		self.test_obj.sync()
+		self.assertIsNone(self.test_obj.info_cache)
+

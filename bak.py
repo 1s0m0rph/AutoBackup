@@ -21,8 +21,10 @@ general process:
 	7. verify checksum on the redownloaded and original zips are the same, if so delete both from local and the old zip from cloud. if not, error out, log everything, and delete the local zips
 """
 
-from checksum_calc import get_dirs_checksum_mismatch
+from checksum_calc import get_dirs_checksum_mismatch, md5_single_file
 from pathlib import Path
+from datetime import datetime
+from bitwarden_manager import *
 import zipfile
 
 #TODO parameterize all of these
@@ -32,16 +34,23 @@ OLD_CHECKSUM_FILE = Path('./test_old_checksum_file')
 CHECKSUM_BLOCK_SIZE = 1024
 
 # crypto/bitwarden related
-API_KEY_FILE = Path('./api_key.json')
+PATH_TO_BITWARDEN_EXE = Path("path/to/bw") # TODO config file instead of hardcode (also fix references later on... somehow. this is basically a 'context' thing so maybe that? or we could just read the config here; actually we basically sidestepped this problem by switching from singleton to dep inject)
+PATH_TO_PASSWORD_FILE = Path("path/to/password_file") # TODO config file, same here
 TARGET_COLLECTION_NAME = "automation-test/wrt-bak-tbp"
 TARGET_ORGANIZATION_NAME = "cardboard"
+TARGET_ITEM_PARTIAL_MATCH_ALL = "AUTO_BAK"
 
 # file handling related
 TMP_DIR = Path("./tmp/")
 
-def gen_filename():
+# misc config
+PERFORM_REDOWNLOAD_CHECK = True # whether to redownload the file and do a checksum verification on it vs the zip we uploaded
+
+def gen_filename(additional_file_name_info:str=""):
 	"""
 	generate the filename for a zipfile created right now. adding precise times ensures unique file names
+
+	additional info added to the beginning of the file name
 	"""
 	# format (e.g.): AUTO_BAK_2023-03-18_111004_123456.zip
 	d8 = datetime.now()
@@ -52,102 +61,30 @@ def gen_filename():
 	minute = f'{d8.minute:02}'
 	second = f'{d8.second:02}'
 	microsecond = f'{d8.microsecond:06}'
-	return TMP_DIR / "AUTO_BAK_{}-{}-{}_{}{}{}_{}.zip".format(year, month, day, hour, minute, second, microsecond)
+	return TMP_DIR / f"{additional_file_name_info}AUTO_BAK_{year}-{month}-{day}_{hour}{minute}{second}_{microsecond}.zip"
 
 def zip_dirs(paths_to_dirs):
 	"""
 	zip the target directories
 	"""
+	# make the tmp dir if it doesn't exist
+	if not os.path.isdir(TMP_DIR):
+		os.mkdir(TMP_DIR)
 	# first get the new file name
 	zipfname = gen_filename()
 	# now attempt to do the zip command
-	with zipfile.ZipFila(zipfname, 'w') as zf:
+	with zipfile.ZipFile(zipfname, 'w') as zf:
 		for path in paths_to_dirs:
 			zf.write(path)
 	
 	return zipfname
-	
-def get_bw_org_id(org_name):
-	"""
-	get the actual organization id, given the requested organization name
-	
-	command is: `/path/to/bw/executable list organizations --search <org name>`
-	since I don't think you can specify that that has to be the full name, we can post-process once we have the result
-	"""
-	#TODO cache the org/collection IDs
-	pass
-	
-def get_bw_collection_id(org_name, collection_name):
-	"""
-	get the actual collection ID, given the requested org/collection name
-	note that collection name can be a nested thing to look more like a path (this is provided by default by bitwarden)
-	
-	command is: `/path/to/bw/executable list org-collections --organizationid <org id> --search <collection name>`
-	and as with the org ID, we should postprocess this to make sure we get exactly one collection name
-	"""
-	#TODO cache the org/collection IDs. may want to use an object to handle them
-	org_id = get_bw_org_id(org_name)
-	pass
-	
-def get_bw_obj_in_collection(org_name, collection_name, obj_name_partial):
-	"""
-	get a list of matching objects within the specified collection
-	object name does not need to be complete. partial matching will be done
-	
-	command is: `/path/to/bw/executable list items --organizationid <org id> --collectionid <coll id> --search <obj name>`
-	"""
-	pass
-	
-def create_bw_note_obj_in_coll(obj_details_encoded):
-	"""
-	create a new object that we can attach things to, and return its ID for attaching
-	
-	note that the details have to be encoded first and are very particular about the fields being configured correctly. General rules of thumb:
-		1. don't have any :null fields
-		2. collection IDs are a literal list (e.g. "collectionIds":["some-random-coll-id"])
-		3. the 'type' field that isn't within the 'secureNote' field is some kind of encoding type. for secure note you want 2
-		4. the 'secureNote' field should contain the type, i.e. "secureNote":{"type":0}
-		
-	all of that fails if you aren't attaching to notes so... attach to notes I guess
-	
-	command is: `/path/to/bw/executable create item <encoded item data>`
-	"""
-	pass
-
-def upload_file_as_attachment_to_bw(item_id, path_to_file):
-	"""
-	files on bitwarden are really just "attachments". irritatingly, these have a max size of 500 MB, so we'll need to keep that in mind throughout this process
-	
-	returns the attachment ID
-	
-	command is: `/path/to/bw/executable create attachment --file <path to file> --itemid <item id>`
-	I'm pretty sure the item has to actually exist beforehand, too
-	"""
-	pass
-
-def download_attachment_from_bw(item_id, attach_name, output_path):
-	"""
-	download the attachment of the specified name attached to the specified item, and save to the output path
-	I'm pretty sure output path actually needs to be nonexistent for this to work so... don't make it beforehand or anything
-	
-	command is: `/path/to/bw/executable get attachment <attachment name> --itemid <ID of the item it's attached to> --output <output path>`
-	"""
-	pass
-	
-def do_bw_sync():
-	"""
-	often need to sync before actually doing anything to bitwarden, so here's a fn for that
-	
-	command is: `/path/to/bw/executable sync`
-	"""
-	pass
 
 if __name__ == '__main__':
 	
 	# first, check if we actually need to do anything
-	dirs_are_different, current_checksum = get_dirs_checksum_mismatch(TARGET_DIRS, OLD_CHECKSUM_FILE, CHECKSUM_BLOCK_SIZE)
+	dirs_are_same, current_checksum = get_dirs_checksum_mismatch(TARGET_DIRS, OLD_CHECKSUM_FILE, CHECKSUM_BLOCK_SIZE)
 	
-	if not dirs_are_different:
+	if dirs_are_same:
 		print("Nothing to do, no changes detected!")
 		exit(0)
 	
@@ -155,5 +92,98 @@ if __name__ == '__main__':
 	
 	# first, zip the dirs together
 	temp_zipfname = zip_dirs(TARGET_DIRS)
-	
-	# now figure out
+	print(f"target directories zipped to {temp_zipfname}")
+
+	# next, calculate checksum on the zip itself
+	if PERFORM_REDOWNLOAD_CHECK:
+		print("calculating checksum on zipped dirs")
+		temp_zip_checksum = md5_single_file(temp_zipfname,CHECKSUM_BLOCK_SIZE)
+		print(f"zipfile checksum: {temp_zip_checksum}")
+
+	# set up bitwarden commander
+	sbp_cmdr = RealSubprocessCommander()
+	bw_cmdr = BitwardenCommander(sbp_cmdr,PATH_TO_BITWARDEN_EXE,PATH_TO_PASSWORD_FILE)
+
+	# now get the organization we're targeting
+	print(f"getting organization info for {TARGET_ORGANIZATION_NAME}...")
+	org = BitwardenOrganization.find_organization(bw_cmdr,TARGET_ORGANIZATION_NAME)
+
+	# now get the collection within that organization that we want
+	print(f"getting collection info for {TARGET_COLLECTION_NAME}...")
+	coll = org.find_collection(TARGET_COLLECTION_NAME)
+
+	# now find the most recent backup in that collection (there should only be one there)
+	print("Checking for existing backups...")
+	bak_item = None
+	try:
+		bak_item = coll.find_item(TARGET_ITEM_PARTIAL_MATCH_ALL)
+	except BitwardenItemNotFoundError as e:
+		print("no backup already exists in this collection -- making a new one but NOT deleting anything!")
+
+	# make a new item to attach the new backup to
+	new_item_name = re.match(r'.*(AUTO_BAK.*)\.zip',str(temp_zipfname)).group(1) # everything but the '.zip'
+	print(f"creating new item for this upload: {new_item_name}")
+	new_item = coll.create_note_item_for_attachment(new_item_name,org.bw_id)
+
+	# upload the zip to that note
+	print(f"performing attachment upload...")
+	attach_obj = new_item.create_upload_attachment(temp_zipfname)
+	print("attachment upload complete!")
+
+	# redownload (if requested)
+	if PERFORM_REDOWNLOAD_CHECK:
+		print("performing re-download check")
+		# make a new item to attach the new download to
+		redownload_fname = gen_filename("REDL_CHECK_")
+		print(f"redownloaded file will be saved to {redownload_fname}")
+
+		# sync prior to performing further bitwarden commands (this is so we can get the attachment properly)
+		print("syncing prior to redownload")
+		bw_cmdr.sync()
+
+		# the attached-to item object should still be valid though
+		print("getting attachments for attach-to item...")
+		attachments = new_item.get_attachments()
+
+		# should only be one of these
+		if len(attachments) > 1:
+			print(f"WARNING: multiple attachments found on newly created attach-to item, will assume first ({attachments[0].name})")
+
+		redl_attach_obj = attachments[0]
+		print(f"attachment found! name is {redl_attach_obj.name}")
+		# set output file
+		redl_attach_obj.output_path = redownload_fname
+
+		# download
+		print("redownloading attachment...")
+		redl_attach_obj.download()
+		print(f"attachment redownloaded to {redownload_fname}")
+
+		# verify checksum
+		redl_checksum = md5_single_file(redownload_fname)
+
+		if redl_checksum != temp_zip_checksum:
+			print("ERROR: redownloaded file checksum does not match original file checksum.")
+		else:
+			print("uploaded and original zip files have matching checksums")
+		print(f"old: {temp_zip_checksum}")
+		print(f"new: {redl_checksum}")
+
+		print("removing temp-redownload file")
+		os.remove(redownload_fname)
+
+	# delete the old record (if it existed)
+	if bak_item is not None:
+		print("deleting old record from bitwarden...")
+		bak_item.delete_from_bw()
+
+	# relock
+	bw_cmdr.lock()
+
+	print("deleting temporary zip file...")
+	os.remove(temp_zipfname)
+
+	# update last known checksum
+	print(f"updating last-known-checksum to {current_checksum}")
+	with open(OLD_CHECKSUM_FILE,'w') as checksum_file:
+		checksum_file.write(current_checksum)

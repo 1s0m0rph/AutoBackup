@@ -18,9 +18,6 @@ from typing import List
 import json
 import os
 
-PATH_TO_BITWARDEN_EXE = Path("path/to/bw") # TODO config file instead of hardcode (also fix references later on... somehow. this is basically a 'context' thing so maybe that? or we could just read the config here; actually we basically sidestepped this problem by switching from singleton to dep inject)
-PATH_TO_PASSWORD_FILE = Path("path/to/pw") # TODO config file, same here
-
 class SingletonMultipleInitError(Exception):
 	pass
 
@@ -41,16 +38,29 @@ class SubprocessCommander(ABC):
 	def exe_wait_sbp_command(self,command:List[str]) -> list:
 		raise NotImplementedError
 
+	def exe_wait_sbp_command_with_piped_info(self,command:List[str],info:str) -> list:
+		raise NotImplementedError
+
 class RealSubprocessCommander(SubprocessCommander):
 	def exe_wait_sbp_command(self,command:List[str]) -> list:
 		"""
 		execute a subprocess command with the given arguments and wait for it to return (blocking call)
 		return the output of the command
 		"""
-		proc = sbp.Popen(command,stdout=sbp.PIPE,stderr=sbp.PIPE)
+		proc = sbp.Popen(command,stdout=sbp.PIPE,stderr=sbp.PIPE,text=True)
 		# wait for execution to complete (better be a finite one!)
 		proc.wait()
+		# a bit of preprocessing here so it's not raw binary
 		return list(proc.stdout)
+
+	def exe_wait_sbp_command_with_piped_info(self,command: List[str],info: str) -> list:
+		"""
+		same as the other one, but we give the command a bit of input too
+		"""
+		proc = sbp.Popen(command,stdout=sbp.PIPE,stderr=sbp.PIPE,stdin=sbp.PIPE,text=True)
+		# give the input using communicate
+		stdout_dat, stderr_dat = proc.communicate(info)
+		return stdout_dat
 
 class BitwardenCommander:
 
@@ -142,15 +152,21 @@ class BitwardenCommander:
 			# unlock first
 			self.unlock()
 		# check if we need to notify of synchronization
-		for arg in bw_args:
-			if re.match(r"\s*sync\s*", arg) is not None:
-				# sync-notify
-				self.perform_sync_notify()
-				# nothing else to do -- only have to do that once
-				break
+		if re.match(r"\s*sync\s*", bw_args[0]) is not None:
+			# sync-notify
+			self.perform_sync_notify()
 		# add session key info and execute
 		sbp_args = [str(self.path_to_bw_executable)] + bw_args + ['--session', self.session_key]
 		return self.sbp_cmd.exe_wait_sbp_command(sbp_args)
+
+	def exe_bw_encode_cmd(self,unencoded_json:str):
+		"""
+		encode the unencoded json and return it as a str
+		the bw cli is really dumb about this and *requires* you to pipe the input in
+		"""
+		command = [str(self.path_to_bw_executable),'encode']
+		res = self.sbp_cmd.exe_wait_sbp_command_with_piped_info(command,unencoded_json)
+		return res
 
 	def find_object_info(self,get_qry_command: List[str], search_text:str):
 		"""
@@ -162,7 +178,7 @@ class BitwardenCommander:
 			find_object_info(['list','org-collections','--organizationid',org_id],search_text)
 		"""
 		# finish the command formatting
-		command = get_qry_command + ['--search', '"' + search_text + '"']
+		command = get_qry_command + ['--search', search_text]#TODO not entirely sure what happens if you have spaces in your text... but adding ""s breaks it so...
 		res = self.exe_bw_command(command)[0]
 		if re.match(r"^[\[{].*",res) is None:
 			raise BitwardenItemNotFoundError(f"Unable to find items for {search_text}. (got 'Not found' from BW).")
@@ -198,8 +214,9 @@ class BitwardenObject(CacheableBitwardenObject):
 	"""
 	
 	def __init__(self,bw_commander:BitwardenCommander,bw_id):
+		self.bw_id = bw_id # has to be done before the super class constructor call in order for us to be able to self-reg
+
 		super().__init__(bw_commander)
-		self.bw_id = bw_id
 
 		self.info_cache = None
 
@@ -285,7 +302,8 @@ class BitwardenItem(BitwardenObject):
 	
 	def __init__(self,bw_commander: BitwardenCommander,bw_id):
 		super().__init__(bw_commander,bw_id)
-		
+
+		self.attachments_have_been_downloaded = False # important distinction since we do cache-as-we-go for uploads
 		self.attachments_cache = None # will be filled out as we go
 		self.info_cache = None
 
@@ -304,16 +322,17 @@ class BitwardenItem(BitwardenObject):
 
 		command is `get item <id>`
 		"""
-		return dict(json.loads(self.bw_commander.exe_bw_command(['get','item',self.bw_id])))
+		return dict(json.loads(self.bw_commander.exe_bw_command(['get','item',self.bw_id])[0]))
 
 	def get_attachments(self):
 		"""
 		return a list of attachments for this item
 		format is list of attachment objects
 		"""
-		if self.attachments_cache is not None:
+		if self.attachments_cache is not None and self.attachments_have_been_downloaded:
 			return self.attachments_cache
 		else:
+			self.attachments_cache = []
 			# actually get the attachments from bitwarden
 			# first have to get this actual item
 			item_details = self.get_info()
@@ -321,10 +340,8 @@ class BitwardenItem(BitwardenObject):
 			if 'attachments' not in item_details:
 				# no attachments
 				print(f"No attachments for item {self}.")
-				self.attachments_cache = []
 			else:
 				# some attachments! make objects for them
-				self.attachments_cache = []
 				for attachment in item_details['attachments']:
 					attach_id = attachment['id']
 					attach_name = attachment['fileName']
@@ -334,12 +351,41 @@ class BitwardenItem(BitwardenObject):
 					self.attachments_cache.append(new_obj)
 				print(f"{len(self.attachments_cache)} attachments found for item {self}.")
 
+			self.attachments_have_been_downloaded = True
 			return self.attachments_cache
+
+	def create_upload_attachment(self,attach_file_input):
+		"""
+		create, upload, and cache an attachment
+		"""
+		# first make the new attachment object
+		# TODO we will have issues on the observer side if we make more than one attachment this way, unless we want to generate a new ID for the attachment obj. granted, the attachment objects don't have special caches so it isn't a big deal if they aren't sync-notified but still
+		new_obj = BitwardenItemAttachment(self.bw_commander,"NO_ID",str(attach_file_input),self,path_to_input_file=attach_file_input)
+
+		# register that in our cache (but don't modify the 'have been downloaded' flag!)
+		if self.attachments_cache is None:
+			self.attachments_cache = []
+		self.attachments_cache.append(new_obj)
+
+		# upload the attachment
+		new_obj.upload()
+
+		return new_obj
+
+	def delete_from_bw(self):
+		"""
+		delete this from bitwarden completely
+
+		command is `delete item <id> --permanent`
+		"""
+		del_result = self.bw_commander.exe_bw_command(['delete','item',self.bw_id,'--permanent'])
+		print(del_result)#TODO log
 
 	def sync(self):
 		super().sync()
 		# clear all lower level caches
 		self.attachments_cache = None
+		self.attachments_have_been_downloaded = False
 
 	@staticmethod
 	def find_item(bw_commander:BitwardenCommander,search_text):
@@ -370,7 +416,7 @@ class BitwardenCollection(BitwardenObject):
 		"""
 		return dict(json.loads(
 			self.bw_commander.exe_bw_command(
-				['get','collection',self.bw_id])))
+				['get','collection',self.bw_id])[0]))
 
 	def find_item(self,search_text:str):
 		"""
@@ -393,9 +439,38 @@ class BitwardenCollection(BitwardenObject):
 			# return that
 			return found_obj
 
-	def create_note_item_for_attachment(self, note_name):
-		#TODO this (basically, just need to make a blank note with this name)
-		raise NotImplementedError
+	def create_note_item_for_attachment(self, note_name:str, organization_id:str = None) -> BitwardenItem:
+		"""
+		create a new blank note within this collection specifically for attaching something to it
+
+		command is `create item <encoded json>`, but getting that encoded json is nontrivial
+		"""
+		# first, make the normal json as a dict
+		unencoded_dict = {
+			"collectionIds":[self.bw_id],
+			"type":2,
+			"name":note_name,
+			"notes":"",
+			"favorite":False,
+			"fields":[],
+			"secureNote":{"type":0},
+			"reprompt":0
+		}
+		if organization_id is not None:
+			unencoded_dict.update({'organizationId':organization_id})
+		# then throw that in json properly
+		unencoded_json = json.dumps(unencoded_dict)
+		# then encode it using bitwarden
+		encoded_json = self.bw_commander.exe_bw_encode_cmd(unencoded_json)
+		# perform the creation command
+		create_out_raw = self.bw_commander.exe_bw_command(['create','item',encoded_json])
+
+		# finally, store that info in an item object and return it
+		create_out = dict(json.loads(create_out_raw[0]))
+		new_obj = BitwardenItem(self.bw_commander,create_out['id'])
+		# precache this object
+		new_obj.info_cache = create_out
+		return new_obj
 
 	def sync(self):
 		super().sync()
@@ -431,7 +506,7 @@ class BitwardenOrganization(BitwardenObject):
 		"""
 		return dict(json.loads(
 			self.bw_commander.exe_bw_command(
-				['get','organization',self.bw_id])))
+				['get','organization',self.bw_id])[0]))
 
 	def find_collection(self, search_text:str):
 		"""
