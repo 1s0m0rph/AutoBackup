@@ -35,7 +35,7 @@ CHECKSUM_BLOCK_SIZE = 1024
 
 # crypto/bitwarden related
 PATH_TO_BITWARDEN_EXE = Path("path/to/bw") # TODO config file instead of hardcode (also fix references later on... somehow. this is basically a 'context' thing so maybe that? or we could just read the config here; actually we basically sidestepped this problem by switching from singleton to dep inject)
-PATH_TO_PASSWORD_FILE = Path("path/to/password_file") # TODO config file, same here
+PATH_TO_PASSWORD_FILE = Path("path/to/pw") # TODO config file, same here
 TARGET_COLLECTION_NAME = "automation-test/wrt-bak-tbp"
 TARGET_ORGANIZATION_NAME = "cardboard"
 TARGET_ITEM_PARTIAL_MATCH_ALL = "AUTO_BAK"
@@ -73,8 +73,13 @@ def zip_dirs(paths_to_dirs):
 	# first get the new file name
 	zipfname = gen_filename()
 	# now attempt to do the zip command
+	# directory level zipping shamelessly stolen from https://stackoverflow.com/questions/1855095/how-to-create-a-zip-archive-of-a-directory
 	with zipfile.ZipFile(zipfname, 'w') as zf:
 		for path in paths_to_dirs:
+			for root,dirs,files in os.walk(path):
+				for file in files:
+					zf.write(os.path.join(root,file),
+							 os.path.relpath(os.path.join(root,file),os.path.join(path,'..')))
 			zf.write(path)
 	
 	return zipfname
