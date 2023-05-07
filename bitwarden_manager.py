@@ -17,6 +17,7 @@ import subprocess as sbp
 from typing import List
 import json
 import os
+import logging
 
 class SingletonMultipleInitError(Exception):
 	pass
@@ -92,9 +93,10 @@ class BitwardenCommander:
 		"""
 		synchronize the vault
 		"""
+		logger = logging.getLogger("AutoBackup")
 		# just do the command itself and let notify-detection handle it
 		sync_result = self.exe_bw_command(['sync'])
-		print(sync_result) #TODO log
+		logger.debug(f"sync result: {sync_result}")
 
 	def lock(self):
 		"""
@@ -110,9 +112,9 @@ class BitwardenCommander:
 
 		Note that we're assuming you already did a login at some point and that things are currently locked!
 		"""
+		logger = logging.getLogger("AutoBackup")
 		if self.session_key is not None:
-			#TODO log instead
-			print("WARNING: requested unlock, but session key already existed. Not creating a new one.")
+			logger.warning("Requested unlock, but session key already existed. Not creating a new one.")
 			return # nothing to do
 
 		# make sure the password file exists before proceeding
@@ -132,7 +134,7 @@ class BitwardenCommander:
 			raise InvalidMasterPasswordError
 		# otherwise, should be valid
 		self.session_key = unlock_output[0]
-		print("Session key set. Vault is unlocked.")  # TODO: log instead of print
+		logger.info("Session key set. Vault is unlocked.")
 		# also sync just to be sure
 		self.sync()
 
@@ -177,6 +179,7 @@ class BitwardenCommander:
 		or to find a collection within an organization
 			find_object_info(['list','org-collections','--organizationid',org_id],search_text)
 		"""
+		logger = logging.getLogger("AutoBackup")
 		# finish the command formatting
 		command = get_qry_command + ['--search', search_text]#TODO not entirely sure what happens if you have spaces in your text... but adding ""s breaks it so...
 		res = self.exe_bw_command(command)[0]
@@ -188,8 +191,7 @@ class BitwardenCommander:
 		res = dict(raw_res[0]) # default to the first item
 		for res_item in raw_res:
 			if res_item['name'] == search_text:
-				#TODO log
-				print(f"Exact match found in search results (for {search_text}). assuming that was the intent")
+				logger.debug(f"Exact match found in search results (for {search_text}). assuming that was the intent")
 				res = res_item
 
 		# no further processing to do here, up to the caller		
@@ -274,13 +276,14 @@ class BitwardenItemAttachment(BitwardenObject):
 
 		command is `get attachment <attach name> --itemid <ID of the attached-to item> --output <path>`
 		"""
+		logger = logging.getLogger("AutoBackup")
 		command = ['get','attachment',self.name,'--itemid',self.item_attached_to.bw_id]
 		if self.output_path is None:
-			print(f"WARNING: no output path provided for {self} download. Default path will be used.")#TODO log
+			logger.warning(f"No output path provided for {self} download. Default path will be used.")
 		else:
 			command += ['--output', str(self.output_path)]
 		dl_result = self.bw_commander.exe_bw_command(command)
-		print(dl_result) #TODO log, maybe check for errors too
+		logger.debug(f"Download result: {dl_result}")
 
 	def upload(self):
 		"""
@@ -288,12 +291,13 @@ class BitwardenItemAttachment(BitwardenObject):
 
 		command is `create attachment --file <path to file> --itemid <item id to attach to>`
 		"""
+		logger = logging.getLogger("AutoBackup")
 		if self.input_path is None:
 			raise ValueError(f"Input path for {self} is not set. Must be set prior to uploading.")
 
 		command = ['create', 'attachment', '--file', str(self.input_path), '--itemid', self.item_attached_to.bw_id]
 		ul_result = self.bw_commander.exe_bw_command(command)
-		print(ul_result)  #TODO log, maybe check for errors too
+		logger.debug(f"Upload result: {ul_result}")
 
 class BitwardenItem(BitwardenObject):
 	"""
@@ -329,6 +333,7 @@ class BitwardenItem(BitwardenObject):
 		return a list of attachments for this item
 		format is list of attachment objects
 		"""
+		logger = logging.getLogger("AutoBackup")
 		if self.attachments_cache is not None and self.attachments_have_been_downloaded:
 			return self.attachments_cache
 		else:
@@ -339,7 +344,7 @@ class BitwardenItem(BitwardenObject):
 			# now parse that for the 'attachments' field
 			if 'attachments' not in item_details:
 				# no attachments
-				print(f"No attachments for item {self}.")
+				logger.debug(f"No attachments for item {self}.")
 			else:
 				# some attachments! make objects for them
 				for attachment in item_details['attachments']:
@@ -349,7 +354,7 @@ class BitwardenItem(BitwardenObject):
 					# cache its info now since we have it
 					new_obj.info_cache = attachment
 					self.attachments_cache.append(new_obj)
-				print(f"{len(self.attachments_cache)} attachments found for item {self}.")
+				logger.debug(f"{len(self.attachments_cache)} attachments found for item {self}.")
 
 			self.attachments_have_been_downloaded = True
 			return self.attachments_cache
@@ -378,8 +383,9 @@ class BitwardenItem(BitwardenObject):
 
 		command is `delete item <id> --permanent`
 		"""
+		logger = logging.getLogger("AutoBackup")
 		del_result = self.bw_commander.exe_bw_command(['delete','item',self.bw_id,'--permanent'])
-		print(del_result)#TODO log
+		logger.debug(f"Delete result: {del_result}")
 
 	def sync(self):
 		super().sync()

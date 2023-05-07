@@ -27,6 +27,7 @@ from pathlib import Path
 from datetime import datetime
 from bitwarden_manager import *
 import zipfile
+import logging
 
 PATH_TO_CONFIG_FILE = Path("./autobak.ini")
 TARGET_ITEM_PARTIAL_MATCH_ALL = "AUTO_BAK"
@@ -74,111 +75,124 @@ if __name__ == '__main__':
 	# first, get config
 	cfg = AutobakConfig(PATH_TO_CONFIG_FILE)
 
+	# set up logging
+	logger = logging.getLogger("AutoBackup")
+	log_handler = logging.FileHandler(cfg.path_to_log_file)
+	log_fmt = logging.Formatter(fmt = '%(asctime)s, from `%(module)s` %(levelname)s: %(message)s', datefmt = '%Y-%m-%d %H:%M:%S %Z')
+	log_handler.setFormatter(log_fmt)
+	logger.addHandler(log_handler)
+	logger.setLevel(cfg.log_level)
+
+	logger.info("Autobackup script initialized.")
+
 	# check if we actually need to do anything
 	dirs_are_same, current_checksum = get_dirs_checksum_mismatch(cfg.target_dirs,
 																 cfg.most_recent_checksum_file,
 																 cfg.checksum_block_size)
 	
 	if dirs_are_same:
-		print("Nothing to do, no changes detected!")
+		logger.info("Nothing to do, no changes detected!")
 		exit(0)
-	
-	print("Detected change in directories-checksum. Attempting to perform backup")
-	
+
+	logger.info("Detected change in directories-checksum. Attempting to perform backup")
+
 	# first, zip the dirs together
 	temp_zipfname = zip_dirs(cfg,cfg.target_dirs)
-	print(f"target directories zipped to {temp_zipfname}")
+
+	logger.debug(f"target directories zipped to {temp_zipfname}")
 
 	# next, calculate checksum on the zip itself
 	if cfg.perform_redownload_check:
-		print("calculating checksum on zipped dirs")
+		logger.debug("calculating checksum on zipped dirs")
 		temp_zip_checksum = md5_single_file(temp_zipfname,cfg.checksum_block_size)
-		print(f"zipfile checksum: {temp_zip_checksum}")
+		logger.debug(f"zipfile checksum: {temp_zip_checksum}")
 
 	# set up bitwarden commander
 	sbp_cmdr = RealSubprocessCommander()
 	bw_cmdr = BitwardenCommander(sbp_cmdr,cfg.path_to_bw_exe,cfg.path_to_pw_file)
 
 	# now get the organization we're targeting
-	print(f"getting organization info for {cfg.target_org}...")
+	logger.debug(f"getting organization info for {cfg.target_org}...")
 	org = BitwardenOrganization.find_organization(bw_cmdr,cfg.target_org)
 
 	# now get the collection within that organization that we want
-	print(f"getting collection info for {cfg.target_coll}...")
+	logger.debug(f"getting collection info for {cfg.target_coll}...")
 	coll = org.find_collection(cfg.target_coll)
 
 	# now find the most recent backup in that collection (there should only be one there)
-	print("Checking for existing backups...")
+	logger.debug("Checking for existing backups...")
 	bak_item = None
 	try:
 		bak_item = coll.find_item(TARGET_ITEM_PARTIAL_MATCH_ALL)
 	except BitwardenItemNotFoundError as e:
-		print("no backup already exists in this collection -- making a new one but NOT deleting anything!")
+		logger.info("no backup already exists in this collection -- making a new one but NOT deleting anything!")
 
 	# make a new item to attach the new backup to
 	new_item_name = re.match(r'.*(AUTO_BAK.*)\.zip',str(temp_zipfname)).group(1) # everything but the '.zip'
-	print(f"creating new item for this upload: {new_item_name}")
+	logger.info(f"creating new item for this upload: {new_item_name}")
 	new_item = coll.create_note_item_for_attachment(new_item_name,org.bw_id)
 
 	# upload the zip to that note
-	print(f"performing attachment upload...")
+	logger.info(f"performing attachment upload...")
 	attach_obj = new_item.create_upload_attachment(temp_zipfname)
-	print("attachment upload complete!")
+	logger.info("attachment upload complete!")
 
 	# redownload (if requested)
 	if cfg.perform_redownload_check:
-		print("performing re-download check")
+		logger.info("performing re-download check")
 		# make a new item to attach the new download to
 		redownload_fname = gen_filename(cfg,"REDL_CHECK_")
-		print(f"redownloaded file will be saved to {redownload_fname}")
+		logger.debug(f"redownloaded file will be saved to {redownload_fname}")
 
 		# sync prior to performing further bitwarden commands (this is so we can get the attachment properly)
-		print("syncing prior to redownload")
+		logger.debug("syncing prior to redownload")
 		bw_cmdr.sync()
 
 		# the attached-to item object should still be valid though
-		print("getting attachments for attach-to item...")
+		logger.debug("getting attachments for attach-to item...")
 		attachments = new_item.get_attachments()
 
 		# should only be one of these
 		if len(attachments) > 1:
-			print(f"WARNING: multiple attachments found on newly created attach-to item, will assume first ({attachments[0].name})")
+			logger.warning(f"WARNING: multiple attachments found on newly created attach-to item, will assume first ({attachments[0].name})")
 
 		redl_attach_obj = attachments[0]
-		print(f"attachment found! name is {redl_attach_obj.name}")
+		logger.debug(f"attachment found! name is {redl_attach_obj.name}")
 		# set output file
 		redl_attach_obj.output_path = redownload_fname
 
 		# download
-		print("redownloading attachment...")
+		logger.info("redownloading attachment...")
 		redl_attach_obj.download()
-		print(f"attachment redownloaded to {redownload_fname}")
+		logger.info(f"attachment redownloaded to {redownload_fname}")
 
 		# verify checksum
 		redl_checksum = md5_single_file(redownload_fname)
 
 		if redl_checksum != temp_zip_checksum:
-			print("ERROR: redownloaded file checksum does not match original file checksum.")
+			logger.error("ERROR: redownloaded file checksum does not match original file checksum.")
 		else:
-			print("uploaded and original zip files have matching checksums")
-		print(f"old: {temp_zip_checksum}")
-		print(f"new: {redl_checksum}")
+			logger.info("uploaded and original zip files have matching checksums")
+		logger.debug(f"old: {temp_zip_checksum}")
+		logger.debug(f"new: {redl_checksum}")
 
-		print("removing temp-redownload file")
+		logger.debug("removing temp-redownload file")
 		os.remove(redownload_fname)
 
 	# delete the old record (if it existed)
 	if bak_item is not None:
-		print("deleting old record from bitwarden...")
+		logger.info("deleting old record from bitwarden...")
 		bak_item.delete_from_bw()
 
 	# relock
 	bw_cmdr.lock()
 
-	print("deleting temporary zip file...")
+	logger.debug("deleting temporary zip file...")
 	os.remove(temp_zipfname)
 
 	# update last known checksum
-	print(f"updating last-known-checksum to {current_checksum}")
+	logger.debug(f"updating last-known-checksum to {current_checksum}")
 	with open(cfg.most_recent_checksum_file,'w') as checksum_file:
 		checksum_file.write(current_checksum)
+
+	logger.info("Update complete!")

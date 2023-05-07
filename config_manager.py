@@ -43,6 +43,9 @@ class AutobakConfig:
 		self.path_to_tmp_dir = Path(cfg_parser['FILE_HANDLING'].get('TmpDirLocation',fallback='./tmp'))
 		# MISC
 		self.perform_redownload_check = cfg_parser['MISC'].getboolean('PerformRedownloadCheck',fallback=True)
+		# LOGGING
+		self.path_to_log_file = Path(cfg_parser['LOGGING'].get('PathToLogFile', fallback='./autobak.log'))
+		self.log_level = cfg_parser['LOGGING'].get('LogLevel', fallback='CRITICAL')
 
 	def print_info(self):
 		pstr = f"""
