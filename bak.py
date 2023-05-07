@@ -22,31 +22,16 @@ general process:
 """
 
 from checksum_calc import get_dirs_checksum_mismatch, md5_single_file
+from config_manager import AutobakConfig
 from pathlib import Path
 from datetime import datetime
 from bitwarden_manager import *
 import zipfile
 
-#TODO parameterize all of these
-# checksum related
-TARGET_DIRS = [Path('./test_target_dir_1/'),Path('./test_target_dir_2/')]
-OLD_CHECKSUM_FILE = Path('./test_old_checksum_file')
-CHECKSUM_BLOCK_SIZE = 1024
-
-# crypto/bitwarden related
-PATH_TO_BITWARDEN_EXE = Path("path/to/bw") # TODO config file instead of hardcode (also fix references later on... somehow. this is basically a 'context' thing so maybe that? or we could just read the config here; actually we basically sidestepped this problem by switching from singleton to dep inject)
-PATH_TO_PASSWORD_FILE = Path("path/to/pw") # TODO config file, same here
-TARGET_COLLECTION_NAME = "automation-test/wrt-bak-tbp"
-TARGET_ORGANIZATION_NAME = "cardboard"
+PATH_TO_CONFIG_FILE = Path("./autobak.ini")
 TARGET_ITEM_PARTIAL_MATCH_ALL = "AUTO_BAK"
 
-# file handling related
-TMP_DIR = Path("./tmp/")
-
-# misc config
-PERFORM_REDOWNLOAD_CHECK = True # whether to redownload the file and do a checksum verification on it vs the zip we uploaded
-
-def gen_filename(additional_file_name_info:str=""):
+def gen_filename(cfg:AutobakConfig,additional_file_name_info:str=""):
 	"""
 	generate the filename for a zipfile created right now. adding precise times ensures unique file names
 
@@ -61,17 +46,17 @@ def gen_filename(additional_file_name_info:str=""):
 	minute = f'{d8.minute:02}'
 	second = f'{d8.second:02}'
 	microsecond = f'{d8.microsecond:06}'
-	return TMP_DIR / f"{additional_file_name_info}AUTO_BAK_{year}-{month}-{day}_{hour}{minute}{second}_{microsecond}.zip"
+	return cfg.path_to_tmp_dir / f"{additional_file_name_info}AUTO_BAK_{year}-{month}-{day}_{hour}{minute}{second}_{microsecond}.zip"
 
-def zip_dirs(paths_to_dirs):
+def zip_dirs(cfg:AutobakConfig,paths_to_dirs):
 	"""
 	zip the target directories
 	"""
 	# make the tmp dir if it doesn't exist
-	if not os.path.isdir(TMP_DIR):
-		os.mkdir(TMP_DIR)
+	if not os.path.isdir(cfg.path_to_tmp_dir):
+		os.mkdir(cfg.path_to_tmp_dir)
 	# first get the new file name
-	zipfname = gen_filename()
+	zipfname = gen_filename(cfg)
 	# now attempt to do the zip command
 	# directory level zipping shamelessly stolen from https://stackoverflow.com/questions/1855095/how-to-create-a-zip-archive-of-a-directory
 	with zipfile.ZipFile(zipfname, 'w') as zf:
@@ -85,9 +70,14 @@ def zip_dirs(paths_to_dirs):
 	return zipfname
 
 if __name__ == '__main__':
-	
-	# first, check if we actually need to do anything
-	dirs_are_same, current_checksum = get_dirs_checksum_mismatch(TARGET_DIRS, OLD_CHECKSUM_FILE, CHECKSUM_BLOCK_SIZE)
+
+	# first, get config
+	cfg = AutobakConfig(PATH_TO_CONFIG_FILE)
+
+	# check if we actually need to do anything
+	dirs_are_same, current_checksum = get_dirs_checksum_mismatch(cfg.target_dirs,
+																 cfg.most_recent_checksum_file,
+																 cfg.checksum_block_size)
 	
 	if dirs_are_same:
 		print("Nothing to do, no changes detected!")
@@ -96,26 +86,26 @@ if __name__ == '__main__':
 	print("Detected change in directories-checksum. Attempting to perform backup")
 	
 	# first, zip the dirs together
-	temp_zipfname = zip_dirs(TARGET_DIRS)
+	temp_zipfname = zip_dirs(cfg,cfg.target_dirs)
 	print(f"target directories zipped to {temp_zipfname}")
 
 	# next, calculate checksum on the zip itself
-	if PERFORM_REDOWNLOAD_CHECK:
+	if cfg.perform_redownload_check:
 		print("calculating checksum on zipped dirs")
-		temp_zip_checksum = md5_single_file(temp_zipfname,CHECKSUM_BLOCK_SIZE)
+		temp_zip_checksum = md5_single_file(temp_zipfname,cfg.checksum_block_size)
 		print(f"zipfile checksum: {temp_zip_checksum}")
 
 	# set up bitwarden commander
 	sbp_cmdr = RealSubprocessCommander()
-	bw_cmdr = BitwardenCommander(sbp_cmdr,PATH_TO_BITWARDEN_EXE,PATH_TO_PASSWORD_FILE)
+	bw_cmdr = BitwardenCommander(sbp_cmdr,cfg.path_to_bw_exe,cfg.path_to_pw_file)
 
 	# now get the organization we're targeting
-	print(f"getting organization info for {TARGET_ORGANIZATION_NAME}...")
-	org = BitwardenOrganization.find_organization(bw_cmdr,TARGET_ORGANIZATION_NAME)
+	print(f"getting organization info for {cfg.target_org}...")
+	org = BitwardenOrganization.find_organization(bw_cmdr,cfg.target_org)
 
 	# now get the collection within that organization that we want
-	print(f"getting collection info for {TARGET_COLLECTION_NAME}...")
-	coll = org.find_collection(TARGET_COLLECTION_NAME)
+	print(f"getting collection info for {cfg.target_coll}...")
+	coll = org.find_collection(cfg.target_coll)
 
 	# now find the most recent backup in that collection (there should only be one there)
 	print("Checking for existing backups...")
@@ -136,10 +126,10 @@ if __name__ == '__main__':
 	print("attachment upload complete!")
 
 	# redownload (if requested)
-	if PERFORM_REDOWNLOAD_CHECK:
+	if cfg.perform_redownload_check:
 		print("performing re-download check")
 		# make a new item to attach the new download to
-		redownload_fname = gen_filename("REDL_CHECK_")
+		redownload_fname = gen_filename(cfg,"REDL_CHECK_")
 		print(f"redownloaded file will be saved to {redownload_fname}")
 
 		# sync prior to performing further bitwarden commands (this is so we can get the attachment properly)
@@ -190,5 +180,5 @@ if __name__ == '__main__':
 
 	# update last known checksum
 	print(f"updating last-known-checksum to {current_checksum}")
-	with open(OLD_CHECKSUM_FILE,'w') as checksum_file:
+	with open(cfg.most_recent_checksum_file,'w') as checksum_file:
 		checksum_file.write(current_checksum)

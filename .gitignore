@@ -5,3 +5,4 @@ test_old_checksum_file
 __pycache__
 password_file
 tmp
+autobak.ini
