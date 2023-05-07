@@ -48,7 +48,11 @@ class RealSubprocessCommander(SubprocessCommander):
 		execute a subprocess command with the given arguments and wait for it to return (blocking call)
 		return the output of the command
 		"""
-		proc = sbp.Popen(command,stdout=sbp.PIPE,stderr=sbp.PIPE,text=True)
+		# keeping windows from spawning a new window every time we execute a sbp command, courtesy of https://stackoverflow.com/questions/1765078/how-to-avoid-console-window-with-pyw-file-containing-os-system-call/12964900#12964900
+		sup_info = sbp.STARTUPINFO()
+		sup_info.dwFlags |= sbp.STARTF_USESHOWWINDOW
+		sup_info.wShowWindow = sbp.SW_HIDE
+		proc = sbp.Popen(command,stdout=sbp.PIPE,stderr=sbp.PIPE,text=True,startupinfo=sup_info)
 		# wait for execution to complete (better be a finite one!)
 		proc.wait()
 		# a bit of preprocessing here so it's not raw binary
@@ -58,7 +62,11 @@ class RealSubprocessCommander(SubprocessCommander):
 		"""
 		same as the other one, but we give the command a bit of input too
 		"""
-		proc = sbp.Popen(command,stdout=sbp.PIPE,stderr=sbp.PIPE,stdin=sbp.PIPE,text=True)
+		# keeping windows from spawning a new window every time we execute a sbp command, courtesy of https://stackoverflow.com/questions/1765078/how-to-avoid-console-window-with-pyw-file-containing-os-system-call/12964900#12964900
+		sup_info = sbp.STARTUPINFO()
+		sup_info.dwFlags |= sbp.STARTF_USESHOWWINDOW
+		sup_info.wShowWindow = sbp.SW_HIDE
+		proc = sbp.Popen(command,stdout=sbp.PIPE,stderr=sbp.PIPE,stdin=sbp.PIPE,text=True,startupinfo=sup_info)
 		# give the input using communicate
 		stdout_dat, stderr_dat = proc.communicate(info)
 		return stdout_dat
