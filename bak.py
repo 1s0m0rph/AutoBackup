@@ -85,114 +85,141 @@ if __name__ == '__main__':
 
 	logger.info("Autobackup script initialized.")
 
-	# check if we actually need to do anything
-	dirs_are_same, current_checksum = get_dirs_checksum_mismatch(cfg.target_dirs,
-																 cfg.most_recent_checksum_file,
-																 cfg.checksum_block_size)
-	
-	if dirs_are_same:
-		logger.info("Nothing to do, no changes detected!")
-		exit(0)
+	try: # handle ALL exceptions during runtime so we at least get a log of them
+		# check if we actually need to do anything
+		dirs_are_same, current_checksum = get_dirs_checksum_mismatch(cfg.target_dirs,
+																	 cfg.most_recent_checksum_file,
+																	 cfg.checksum_block_size)
 
-	logger.info("Detected change in directories-checksum. Attempting to perform backup")
+		if dirs_are_same:
+			logger.info("Nothing to do, no changes detected!")
+			exit(0)
 
-	# first, zip the dirs together
-	temp_zipfname = zip_dirs(cfg,cfg.target_dirs)
+		logger.info("Detected change in directories-checksum. Attempting to perform backup")
 
-	logger.debug(f"target directories zipped to {temp_zipfname}")
+		# first, zip the dirs together
+		temp_zipfname = zip_dirs(cfg,cfg.target_dirs)
 
-	# next, calculate checksum on the zip itself
-	if cfg.perform_redownload_check:
-		logger.debug("calculating checksum on zipped dirs")
-		temp_zip_checksum = md5_single_file(temp_zipfname,cfg.checksum_block_size)
-		logger.debug(f"zipfile checksum: {temp_zip_checksum}")
+		logger.debug(f"target directories zipped to {temp_zipfname}")
 
-	# set up bitwarden commander
-	sbp_cmdr = RealSubprocessCommander()
-	bw_cmdr = BitwardenCommander(sbp_cmdr,cfg.path_to_bw_exe,cfg.path_to_pw_file)
+		# next, calculate checksum on the zip itself
+		if cfg.perform_redownload_check:
+			logger.debug("calculating checksum on zipped dirs")
+			temp_zip_checksum = md5_single_file(temp_zipfname,cfg.checksum_block_size)
+			logger.debug(f"zipfile checksum: {temp_zip_checksum}")
 
-	# now get the organization we're targeting
-	logger.debug(f"getting organization info for {cfg.target_org}...")
-	org = BitwardenOrganization.find_organization(bw_cmdr,cfg.target_org)
+		# set up bitwarden commander
+		sbp_cmdr = RealSubprocessCommander()
+		bw_cmdr = BitwardenCommander(sbp_cmdr,cfg.path_to_bw_exe,cfg.path_to_pw_file)
 
-	# now get the collection within that organization that we want
-	logger.debug(f"getting collection info for {cfg.target_coll}...")
-	coll = org.find_collection(cfg.target_coll)
+	except BaseException as e:
+		if (SystemExit == type(e)) and ("0" == str(e)):
+			# not an error, exit normally
+			exit(0)
 
-	# now find the most recent backup in that collection (there should only be one there)
-	logger.debug("Checking for existing backups...")
-	bak_item = None
+		logger.critical(f"Caught unhandled exception during runtime, prior to initializing the bitwarden commander: {type(e).__name__}: {e}.")
+
+		# reraise exception after catching -- we just wanted a record of it
+		raise e
+
+	# all exceptions from here on out should attempt to relock the vault after being caught
 	try:
-		bak_item = coll.find_item(TARGET_ITEM_PARTIAL_MATCH_ALL)
-	except BitwardenItemNotFoundError as e:
-		logger.info("no backup already exists in this collection -- making a new one but NOT deleting anything!")
+		# now get the organization we're targeting
+		logger.debug(f"getting organization info for {cfg.target_org}...")
+		org = BitwardenOrganization.find_organization(bw_cmdr,cfg.target_org)
 
-	# make a new item to attach the new backup to
-	new_item_name = re.match(r'.*(AUTO_BAK.*)\.zip',str(temp_zipfname)).group(1) # everything but the '.zip'
-	logger.info(f"creating new item for this upload: {new_item_name}")
-	new_item = coll.create_note_item_for_attachment(new_item_name,org.bw_id)
+		# now get the collection within that organization that we want
+		logger.debug(f"getting collection info for {cfg.target_coll}...")
+		coll = org.find_collection(cfg.target_coll)
 
-	# upload the zip to that note
-	logger.info(f"performing attachment upload...")
-	attach_obj = new_item.create_upload_attachment(temp_zipfname)
-	logger.info("attachment upload complete!")
+		# now find the most recent backup in that collection (there should only be one there)
+		logger.debug("Checking for existing backups...")
+		bak_item = None
+		try:
+			bak_item = coll.find_item(TARGET_ITEM_PARTIAL_MATCH_ALL)
+		except BitwardenItemNotFoundError as e:
+			logger.info("no backup already exists in this collection -- making a new one but NOT deleting anything!")
 
-	# redownload (if requested)
-	if cfg.perform_redownload_check:
-		logger.info("performing re-download check")
-		# make a new item to attach the new download to
-		redownload_fname = gen_filename(cfg,"REDL_CHECK_")
-		logger.debug(f"redownloaded file will be saved to {redownload_fname}")
+		# make a new item to attach the new backup to
+		new_item_name = re.match(r'.*(AUTO_BAK.*)\.zip',str(temp_zipfname)).group(1) # everything but the '.zip'
+		logger.info(f"creating new item for this upload: {new_item_name}")
+		new_item = coll.create_note_item_for_attachment(new_item_name,org.bw_id)
 
-		# sync prior to performing further bitwarden commands (this is so we can get the attachment properly)
-		logger.debug("syncing prior to redownload")
-		bw_cmdr.sync()
+		# upload the zip to that note
+		logger.info(f"performing attachment upload...")
+		attach_obj = new_item.create_upload_attachment(temp_zipfname)
+		logger.info("attachment upload complete!")
 
-		# the attached-to item object should still be valid though
-		logger.debug("getting attachments for attach-to item...")
-		attachments = new_item.get_attachments()
+		# redownload (if requested)
+		if cfg.perform_redownload_check:
+			logger.info("performing re-download check")
+			# make a new item to attach the new download to
+			redownload_fname = gen_filename(cfg,"REDL_CHECK_")
+			logger.debug(f"redownloaded file will be saved to {redownload_fname}")
 
-		# should only be one of these
-		if len(attachments) > 1:
-			logger.warning(f"WARNING: multiple attachments found on newly created attach-to item, will assume first ({attachments[0].name})")
+			# sync prior to performing further bitwarden commands (this is so we can get the attachment properly)
+			logger.debug("syncing prior to redownload")
+			bw_cmdr.sync()
 
-		redl_attach_obj = attachments[0]
-		logger.debug(f"attachment found! name is {redl_attach_obj.name}")
-		# set output file
-		redl_attach_obj.output_path = redownload_fname
+			# the attached-to item object should still be valid though
+			logger.debug("getting attachments for attach-to item...")
+			attachments = new_item.get_attachments()
 
-		# download
-		logger.info("redownloading attachment...")
-		redl_attach_obj.download()
-		logger.info(f"attachment redownloaded to {redownload_fname}")
+			# should only be one of these
+			if len(attachments) > 1:
+				logger.warning(f"WARNING: multiple attachments found on newly created attach-to item, will assume first ({attachments[0].name})")
 
-		# verify checksum
-		redl_checksum = md5_single_file(redownload_fname)
+			redl_attach_obj = attachments[0]
+			logger.debug(f"attachment found! name is {redl_attach_obj.name}")
+			# set output file
+			redl_attach_obj.output_path = redownload_fname
 
-		if redl_checksum != temp_zip_checksum:
-			logger.error("ERROR: redownloaded file checksum does not match original file checksum.")
-		else:
-			logger.info("uploaded and original zip files have matching checksums")
-		logger.debug(f"old: {temp_zip_checksum}")
-		logger.debug(f"new: {redl_checksum}")
+			# download
+			logger.info("redownloading attachment...")
+			redl_attach_obj.download()
+			logger.info(f"attachment redownloaded to {redownload_fname}")
 
-		logger.debug("removing temp-redownload file")
-		os.remove(redownload_fname)
+			# verify checksum
+			redl_checksum = md5_single_file(redownload_fname)
 
-	# delete the old record (if it existed)
-	if bak_item is not None:
-		logger.info("deleting old record from bitwarden...")
-		bak_item.delete_from_bw()
+			if redl_checksum != temp_zip_checksum:
+				logger.error("ERROR: redownloaded file checksum does not match original file checksum.")
+			else:
+				logger.info("uploaded and original zip files have matching checksums")
+			logger.debug(f"old: {temp_zip_checksum}")
+			logger.debug(f"new: {redl_checksum}")
 
-	# relock
-	bw_cmdr.lock()
+			logger.debug("removing temp-redownload file")
+			os.remove(redownload_fname)
 
-	logger.debug("deleting temporary zip file...")
-	os.remove(temp_zipfname)
+		# delete the old record (if it existed)
+		if bak_item is not None:
+			logger.info("deleting old record from bitwarden...")
+			bak_item.delete_from_bw()
 
-	# update last known checksum
-	logger.debug(f"updating last-known-checksum to {current_checksum}")
-	with open(cfg.most_recent_checksum_file,'w') as checksum_file:
-		checksum_file.write(current_checksum)
+		# relock
+		bw_cmdr.lock()
 
-	logger.info("Update complete!")
+		logger.debug("deleting temporary zip file...")
+		os.remove(temp_zipfname)
+
+		# update last known checksum
+		logger.debug(f"updating last-known-checksum to {current_checksum}")
+		with open(cfg.most_recent_checksum_file,'w') as checksum_file:
+			checksum_file.write(current_checksum)
+
+		logger.info("Update complete!")
+	except BaseException as e:
+		# we caught an exception after initializing the commander, attempt to relock
+		logger.critical(f"Caught unhandled exception during runtime AFTER initializing bitwarden commander: {type(e).__name__}: {e}.")
+
+		# attempt to relock
+		logger.critical(f"Attempting to relock vault after critical error.")
+		try:
+			bw_cmdr.lock()
+			logger.critical("Post-critical-error vault relock successful.")
+		except BaseException as e:
+			logger.critical(f"Caught unhandled exception while attempting to relock vault after critical error. Vault lock state cannot be determined.")
+
+			# reraise exception after catching -- we just wanted a record of it
+			raise e
