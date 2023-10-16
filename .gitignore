@@ -6,3 +6,6 @@ __pycache__
 password_file
 tmp
 autobak.ini
+autobak_wrtg.ini
+autobak_misc.ini
+autobak_jrnl.ini

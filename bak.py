@@ -1,6 +1,10 @@
-"""
+USAGE = """
 bak.py - automatically perform a bitwarden backup. this script checks to see if the target directory has changed since it was last backed up, and if so it does a backup with verification.
 
+USAGE: bak.py <path to config ini>
+"""
+
+"""
 important questions:
 
 	1. isn't it insecure to store an API key in the clear like that?
@@ -28,9 +32,7 @@ from datetime import datetime
 from bitwarden_manager import *
 import zipfile
 import logging
-
-PATH_TO_CONFIG_FILE = Path("./autobak.ini")
-TARGET_ITEM_PARTIAL_MATCH_ALL = "AUTO_BAK"
+from sys import argv
 
 def gen_filename(cfg:AutobakConfig,additional_file_name_info:str=""):
 	"""
@@ -49,7 +51,7 @@ def gen_filename(cfg:AutobakConfig,additional_file_name_info:str=""):
 	microsecond = f'{d8.microsecond:06}'
 	return cfg.path_to_tmp_dir / f"{additional_file_name_info}AUTO_BAK_{year}-{month}-{day}_{hour}{minute}{second}_{microsecond}.zip"
 
-def zip_dirs(cfg:AutobakConfig,paths_to_dirs):
+def zip_dirs(cfg:AutobakConfig,paths_to_dirs,additional_fname_info=""):
 	"""
 	zip the target directories
 	"""
@@ -57,7 +59,7 @@ def zip_dirs(cfg:AutobakConfig,paths_to_dirs):
 	if not os.path.isdir(cfg.path_to_tmp_dir):
 		os.mkdir(cfg.path_to_tmp_dir)
 	# first get the new file name
-	zipfname = gen_filename(cfg)
+	zipfname = gen_filename(cfg,additional_fname_info)
 	# now attempt to do the zip command
 	# directory level zipping shamelessly stolen from https://stackoverflow.com/questions/1855095/how-to-create-a-zip-archive-of-a-directory
 	with zipfile.ZipFile(zipfname, 'w') as zf:
@@ -67,13 +69,22 @@ def zip_dirs(cfg:AutobakConfig,paths_to_dirs):
 					zf.write(os.path.join(root,file),
 							 os.path.relpath(os.path.join(root,file),os.path.join(path,'..')))
 			zf.write(path)
-	
+
 	return zipfname
 
 if __name__ == '__main__':
 
+	# parse command line
+	if len(argv) < 2:
+		print(USAGE)
+		print("Error: required at least 1 argument for config INI location")
+		exit(1)
+
+	# first argument is config
+	cfg_file_path = Path(argv[1])
+
 	# first, get config
-	cfg = AutobakConfig(PATH_TO_CONFIG_FILE)
+	cfg = AutobakConfig(cfg_file_path)
 
 	# set up logging
 	logger = logging.getLogger("AutoBackup")
@@ -98,7 +109,7 @@ if __name__ == '__main__':
 		logger.info("Detected change in directories-checksum. Attempting to perform backup")
 
 		# first, zip the dirs together
-		temp_zipfname = zip_dirs(cfg,cfg.target_dirs)
+		temp_zipfname = zip_dirs(cfg,cfg.target_dirs,cfg.additional_prefix)
 
 		logger.debug(f"target directories zipped to {temp_zipfname}")
 
@@ -136,12 +147,12 @@ if __name__ == '__main__':
 		logger.debug("Checking for existing backups...")
 		bak_item = None
 		try:
-			bak_item = coll.find_item(TARGET_ITEM_PARTIAL_MATCH_ALL)
+			bak_item = coll.find_item("AUTO_BAK")
 		except BitwardenItemNotFoundError as e:
 			logger.info("no backup already exists in this collection -- making a new one but NOT deleting anything!")
 
 		# make a new item to attach the new backup to
-		new_item_name = re.match(r'.*(AUTO_BAK.*)\.zip',str(temp_zipfname)).group(1) # everything but the '.zip'
+		new_item_name = temp_zipfname.stem # everything but the path and the '.zip'
 		logger.info(f"creating new item for this upload: {new_item_name}")
 		new_item = coll.create_note_item_for_attachment(new_item_name,org.bw_id)
 

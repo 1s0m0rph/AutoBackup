@@ -43,6 +43,10 @@ class AutobakConfig:
 		self.path_to_tmp_dir = Path(cfg_parser['FILE_HANDLING'].get('TmpDirLocation',fallback='./tmp'))
 		# MISC
 		self.perform_redownload_check = cfg_parser['MISC'].getboolean('PerformRedownloadCheck',fallback=True)
+		self.additional_prefix = cfg_parser['MISC'].get("AdditionalPrefix",fallback="")
+		# add an underscore if additional prefix was set
+		if (len(self.additional_prefix) != 0) and (self.additional_prefix[-1] != '_'):
+			self.additional_prefix += "_"
 		# LOGGING
 		self.path_to_log_file = Path(cfg_parser['LOGGING'].get('PathToLogFile', fallback='./autobak.log'))
 		self.log_level = cfg_parser['LOGGING'].get('LogLevel', fallback='CRITICAL')
@@ -58,5 +62,6 @@ class AutobakConfig:
 		target collection: {self.target_coll}
 		path to tmp dir: {self.path_to_tmp_dir}
 		perform redownload check: {self.perform_redownload_check}
+		additional prefix: {self.additional_prefix}
 		"""
 		print(pstr)
